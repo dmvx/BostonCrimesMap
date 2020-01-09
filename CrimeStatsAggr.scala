@@ -1,8 +1,9 @@
 package com.example.crimestats
 
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.types._
+import org.apache.spark.sql.{SparkSession, _}
+
 
 case class CrimeStatsDataAgg(District: String, name: String, crimes_total: Long, crimes_monthly: Long, Lat: Double, Lng: Double, count: Long)
 
@@ -32,6 +33,7 @@ object CrimeStatsAggr extends App {
     .read
     .option("header", "true")
     .csv(dicfilepath)
+    .withColumn("name",substring_index($"name", "-", 1))
 
   val crimes_total = Crimes
     .groupBy("district")
@@ -55,13 +57,12 @@ object CrimeStatsAggr extends App {
     .agg(callUDF("percentile_approx", $"crimes_in_month", lit(0.5)).as("crimes_monthly"))
     .withColumnRenamed("district", "district_monthly")
 
-
   Crimes
     .join(broadcast(Offense_codes), Crimes("OFFENSE_CODE") === Offense_codes("CODE"))
-    .join(broadcast(crimes_total), Crimes("DISTRICT") === crimes_total("district_total"))
-    .join(broadcast(crimes_avg_lat), Crimes("DISTRICT") === crimes_avg_lat("district_lat"))
-    .join(broadcast(crimes_avg_long), Crimes("DISTRICT") === crimes_avg_long("district_long"))
-    .join(broadcast(crimes_by_monthly), Crimes("DISTRICT") === crimes_by_monthly("district_monthly"))
+    .join(crimes_total, Crimes("DISTRICT") === crimes_total("district_total"))
+    .join(crimes_avg_lat, Crimes("DISTRICT") === crimes_avg_lat("district_lat"))
+    .join(crimes_avg_long, Crimes("DISTRICT") === crimes_avg_long("district_long"))
+    .join(crimes_by_monthly, Crimes("DISTRICT") === crimes_by_monthly("district_monthly"))
     .groupBy("DISTRICT", "name", "crimes_total", "crimes_monthly", "lat", "lng")
     .count()
     .orderBy('count.desc)
@@ -72,9 +73,10 @@ object CrimeStatsAggr extends App {
     }
     .as[CrimeStatsDataAgg]
     .groupBy("DISTRICT", "CRIMES_TOTAL", "CRIMES_MONTHLY", "LAT", "LNG")
-    .agg(collect_list(substring_index($"name", "-", 1)).alias("FREQUENT_CRIME_TYPES"))
-    .write.parquet(outfilepath)
-
+    .agg(collect_list("name").alias("FREQUENT_CRIME_TYPES"))
+    .repartition(1)
+    .write.format("parquet").mode(SaveMode.Overwrite).save(outfilepath)
+    //.show(false)
 
   spark.stop()
 }
